@@ -35,6 +35,7 @@
 #include <string.h>
 #include <stdint.h>   /* INT64_MIN, int16_t, int64_t */
 #include <limits.h>   /* belt-and-suspenders for INT64_MIN on some NDK versions */
+#include <math.h>
 
 /* -------------------------------------------------------------------------
  * Constants
@@ -52,6 +53,10 @@
 
 /* Default VAD threshold when caller passes 0.0f. */
 #define CPVA_VAD_DEFAULT_THRESHOLD  0.5f
+
+/* Hysteresis: lower bar to stay in ACTIVE/GAP than to enter from SILENCE. */
+#define CPVA_VAD_EXIT_MARGIN        0.15f
+#define CPVA_VAD_EXIT_MIN           0.35f
 
 /* KWS defaults */
 #define CPVA_KWS_DEFAULT_THRESHOLD          0.70f
@@ -172,6 +177,13 @@ struct cpva_context {
     int64_t                      vad_onset_ts_us;      /* SoS timestamp (t1) */
     int64_t                      vad_speech_accum_us;  /* speech duration in ONSET */
     int64_t                      vad_gap_start_ts_us;  /* when current gap began */
+    float                        vad_enter_threshold; /* prob to enter speech   */
+    float                        vad_exit_threshold;  /* prob to remain in speech */
+
+    /* 3A bypass + metering */
+    int                          a3a_enabled;
+    float                        last_processed_rms;
+    int32_t                      last_processed_peak;
 
     /* CarPlay session state */
     cpva_voice_activation_mode_t mode;
@@ -181,6 +193,9 @@ struct cpva_context {
     /* Callbacks */
     cpva_callbacks_t             callbacks;
     void                        *user_data;
+
+    cpva_on_processed_frame_fn   processed_frame_listener;
+    void                        *processed_frame_user_data;
 
     /* Language */
     cpva_language_tag_t          active_language;
@@ -235,6 +250,36 @@ static void _cpva_notify_vad_state(cpva_context_t   *ctx,
     }
 }
 
+static void _cpva_update_processed_levels(cpva_context_t *ctx,
+                                          const int16_t  *pcm,
+                                          size_t          count)
+{
+    if (!ctx) {
+        return;
+    }
+    if (!pcm || count == 0) {
+        ctx->last_processed_rms  = 0.0f;
+        ctx->last_processed_peak = 0;
+        return;
+    }
+
+    double sum_sq = 0.0;
+    int32_t peak = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const int32_t sample = (int32_t)pcm[i];
+        const int32_t abs_sample = sample >= 0 ? sample : -sample;
+        if (abs_sample > peak) {
+            peak = abs_sample;
+        }
+        const double s = (double)sample;
+        sum_sq += s * s;
+    }
+
+    ctx->last_processed_rms  =
+        (float)sqrt(sum_sq / (double)count);
+    ctx->last_processed_peak = peak;
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -261,6 +306,8 @@ cpva_error_t cpva_init(
     ctx->format     = *format;
     ctx->callbacks  = *callbacks;
     ctx->user_data  = user_data;
+    ctx->processed_frame_listener     = NULL;
+    ctx->processed_frame_user_data  = NULL;
     ctx->frame_size = format->sample_rate_hz / 100;   /* 10 ms */
 
     /* ----- 3A front-end ------------------------------------------------ */
@@ -330,6 +377,11 @@ cpva_error_t cpva_init(
                           : CPVA_VAD_DEFAULT_THRESHOLD;
 
         ctx->vad_hop_size = hop;
+        ctx->vad_enter_threshold = thr;
+        ctx->vad_exit_threshold  = thr - CPVA_VAD_EXIT_MARGIN;
+        if (ctx->vad_exit_threshold < CPVA_VAD_EXIT_MIN) {
+            ctx->vad_exit_threshold = CPVA_VAD_EXIT_MIN;
+        }
 
         if (ten_vad_create(&ctx->vad_handle, hop, thr) != 0) goto err_vad;
 
@@ -341,6 +393,9 @@ cpva_error_t cpva_init(
     }
 
     /* ----- Default session state --------------------------------------- */
+    ctx->a3a_enabled                   = 1;
+    ctx->last_processed_rms            = 0.0f;
+    ctx->last_processed_peak           = 0;
     ctx->mode                          = CPVA_MODE_DEACTIVATED;
     ctx->app_state_speech              = CPVA_APP_STATE_SPEECH_IDLE;
     ctx->auxiliary_audio_stream_active = 0;
@@ -525,13 +580,22 @@ static void _cpva_vad_process_hop(cpva_context_t *ctx,
                                   int64_t         hop_ts_us)
 {
     float prob  = 0.0f;
+    int   raw_flag = 0;
     int   flag  = 0;
     int64_t hop_dur_us =
         (int64_t)ctx->vad_hop_size * 1000000LL / (int64_t)ctx->format.sample_rate_hz;
 
     if (ten_vad_process(ctx->vad_handle, hop_frame, ctx->vad_hop_size,
-                        &prob, &flag) != 0) {
+                        &prob, &raw_flag) != 0) {
         return;
+    }
+
+    (void)raw_flag;
+    if (ctx->vad_state == CPVA_VAD_ST_ACTIVE ||
+        ctx->vad_state == CPVA_VAD_ST_GAP) {
+        flag = (prob >= ctx->vad_exit_threshold) ? 1 : 0;
+    } else {
+        flag = (prob >= ctx->vad_enter_threshold) ? 1 : 0;
     }
 
     switch (ctx->vad_state) {
@@ -729,13 +793,25 @@ cpva_error_t cpva_feed_audio(
             - (int64_t)ctx->frame_size * 1000000LL
               / (int64_t)ctx->format.sample_rate_hz;
 
-        /* Step 1: 3A front-end (HPF + NS + AEC, in-place). */
-        audio3a_process_capture(ctx->audio3a,
-                                ctx->processed_frame,
-                                ctx->processed_frame,
-                                (int)ctx->frame_size);
+        /* Step 1: 3A front-end (HPF + NS + AEC), or raw passthrough. */
+        if (ctx->a3a_enabled) {
+            audio3a_process_capture(ctx->audio3a,
+                                    ctx->processed_frame,
+                                    ctx->processed_frame,
+                                    (int)ctx->frame_size);
+        }
+        _cpva_update_processed_levels(ctx,
+                                      ctx->processed_frame,
+                                      ctx->frame_size);
 
-        /* Step 2: detection (KWS stub or TenVad). */
+        if (ctx->processed_frame_listener) {
+            ctx->processed_frame_listener(ctx->processed_frame,
+                                          ctx->frame_size,
+                                          frame_ts_us,
+                                          ctx->processed_frame_user_data);
+        }
+
+        /* Step 2: detection (KWS or TenVad). */
         _cpva_run_detection(ctx, ctx->processed_frame, frame_ts_us);
     }
 
@@ -746,10 +822,38 @@ cpva_error_t cpva_feed_audio(
  * AEC runtime control
  * ---------------------------------------------------------------------- */
 
+cpva_error_t cpva_set_3a_enabled(cpva_context_t *ctx, int enabled)
+{
+    if (!ctx) return CPVA_ERR_NOT_INITIALIZED;
+    ctx->a3a_enabled = (enabled != 0) ? 1 : 0;
+    return CPVA_OK;
+}
+
 cpva_error_t cpva_set_aec_delay_ms(cpva_context_t *ctx, int delay_ms)
 {
     if (!ctx) return CPVA_ERR_NOT_INITIALIZED;
     audio3a_set_delay_ms(ctx->audio3a, delay_ms);
+    return CPVA_OK;
+}
+
+cpva_error_t cpva_get_capture_stats(cpva_context_t       *ctx,
+                                    cpva_capture_stats_t *stats)
+{
+    if (!ctx || !stats) return CPVA_ERR_INVALID_ARG;
+    stats->processed_rms  = ctx->last_processed_rms;
+    stats->processed_peak = ctx->last_processed_peak;
+    stats->a3a_enabled    = ctx->a3a_enabled;
+    return CPVA_OK;
+}
+
+cpva_error_t cpva_set_processed_frame_listener(
+    cpva_context_t            *ctx,
+    cpva_on_processed_frame_fn fn,
+    void                      *user_data)
+{
+    if (!ctx) return CPVA_ERR_NOT_INITIALIZED;
+    ctx->processed_frame_listener    = fn;
+    ctx->processed_frame_user_data   = user_data;
     return CPVA_OK;
 }
 

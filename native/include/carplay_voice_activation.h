@@ -41,6 +41,12 @@
 extern "C" {
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define CPVA_API __attribute__((visibility("default")))
+#else
+#define CPVA_API
+#endif
+
 /* -------------------------------------------------------------------------
  * Version
  * ---------------------------------------------------------------------- */
@@ -390,7 +396,7 @@ typedef struct {
  * @param      user_data  Opaque pointer forwarded to every callback.
  * @return CPVA_OK on success, negative error code otherwise.
  */
-cpva_error_t cpva_init(
+CPVA_API cpva_error_t cpva_init(
     cpva_context_t            **out_ctx,
     const cpva_audio_format_t  *format,
     const cpva_3a_config_t     *a3_config,
@@ -403,7 +409,7 @@ cpva_error_t cpva_init(
 /**
  * Destroy a context and release all resources.  Safe to call with NULL.
  */
-void cpva_destroy(cpva_context_t *ctx);
+CPVA_API void cpva_destroy(cpva_context_t *ctx);
 
 /* -------------------------------------------------------------------------
  * Device → Accessory: configuration (SET_PARAMETER)
@@ -413,7 +419,7 @@ void cpva_destroy(cpva_context_t *ctx);
  * Update the voice activation mode.
  * Called when the device sends SET_PARAMETER(voiceActivationMode).
  */
-cpva_error_t cpva_set_voice_activation_mode(
+CPVA_API cpva_error_t cpva_set_voice_activation_mode(
     cpva_context_t               *ctx,
     cpva_voice_activation_mode_t  mode
 );
@@ -424,7 +430,7 @@ cpva_error_t cpva_set_voice_activation_mode(
  *
  * @return CPVA_ERR_UNSUPPORTED_LANG if the language is not available.
  */
-cpva_error_t cpva_set_voice_model_language(
+CPVA_API cpva_error_t cpva_set_voice_model_language(
     cpva_context_t            *ctx,
     const cpva_language_tag_t *language
 );
@@ -437,7 +443,7 @@ cpva_error_t cpva_set_voice_model_language(
  * Notify the library of the device's speech app-state change.
  * While CPVA_APP_STATE_SPEECH_RECOGNIZING, on_request_siri is suppressed.
  */
-cpva_error_t cpva_notify_app_state_speech(
+CPVA_API cpva_error_t cpva_notify_app_state_speech(
     cpva_context_t         *ctx,
     cpva_app_state_speech_t state
 );
@@ -448,7 +454,7 @@ cpva_error_t cpva_notify_app_state_speech(
  *
  * @param active  Non-zero if the stream is active.
  */
-cpva_error_t cpva_notify_auxiliary_audio_stream_active(
+CPVA_API cpva_error_t cpva_notify_auxiliary_audio_stream_active(
     cpva_context_t *ctx,
     int             active
 );
@@ -468,7 +474,7 @@ cpva_error_t cpva_notify_auxiliary_audio_stream_active(
  *
  * @param active  1 = enable AEC, 0 = disable AEC.
  */
-cpva_error_t cpva_notify_speaker_active(
+CPVA_API cpva_error_t cpva_notify_speaker_active(
     cpva_context_t *ctx,
     int             active
 );
@@ -487,7 +493,7 @@ cpva_error_t cpva_notify_speaker_active(
  * @param frame_count              Number of samples.
  * @param first_frame_timestamp_us Monotonic timestamp (µs) of the first sample.
  */
-cpva_error_t cpva_feed_speaker_audio(
+CPVA_API cpva_error_t cpva_feed_speaker_audio(
     cpva_context_t *ctx,
     const int16_t  *pcm_frames,
     size_t          frame_count,
@@ -515,7 +521,7 @@ cpva_error_t cpva_feed_speaker_audio(
  * @param frame_count              Number of samples.
  * @param first_frame_timestamp_us Monotonic timestamp (µs) of the first sample.
  */
-cpva_error_t cpva_feed_audio(
+CPVA_API cpva_error_t cpva_feed_audio(
     cpva_context_t *ctx,
     const int16_t  *pcm_frames,
     size_t          frame_count,
@@ -523,8 +529,19 @@ cpva_error_t cpva_feed_audio(
 );
 
 /* -------------------------------------------------------------------------
- * AEC runtime control
+ * 3A / AEC runtime control
  * ---------------------------------------------------------------------- */
+
+/**
+ * Enable or bypass the 3A front-end (HPF + NS + AEC) on the capture path.
+ *
+ * When disabled, cpva_feed_audio() passes raw microphone PCM through to the
+ * detection engines without calling audio3a_process_capture().
+ * Default after cpva_init(): enabled (1).
+ *
+ * @param enabled  Non-zero to run 3A; zero for bypass (raw passthrough).
+ */
+CPVA_API cpva_error_t cpva_set_3a_enabled(cpva_context_t *ctx, int enabled);
 
 /**
  * Update the render-to-capture delay estimate at runtime.
@@ -532,16 +549,54 @@ cpva_error_t cpva_feed_audio(
  *
  * @param delay_ms  New delay in milliseconds.
  */
-cpva_error_t cpva_set_aec_delay_ms(cpva_context_t *ctx, int delay_ms);
+CPVA_API cpva_error_t cpva_set_aec_delay_ms(cpva_context_t *ctx, int delay_ms);
 
 /* -------------------------------------------------------------------------
  * Queries
  * ---------------------------------------------------------------------- */
 
 /**
+ * Snapshot of the most recently processed 10 ms capture frame.
+ * Updated on every cpva_feed_audio() frame pop; useful for demo metering.
+ */
+typedef struct {
+    float processed_rms;
+    int32_t processed_peak;
+    int a3a_enabled;
+} cpva_capture_stats_t;
+
+/**
+ * Read levels after the latest 3A step (or raw passthrough when 3A is off).
+ */
+CPVA_API cpva_error_t cpva_get_capture_stats(
+    cpva_context_t *ctx,
+    cpva_capture_stats_t *stats
+);
+
+/**
+ * Optional tap invoked once per processed 10 ms capture frame, after 3A and
+ * before detection.  Used by demo hosts to record proc PCM to disk.
+ */
+typedef void (*cpva_on_processed_frame_fn)(
+    const int16_t *pcm,
+    size_t         sample_count,
+    int64_t        first_sample_timestamp_us,
+    void          *user_data
+);
+
+/**
+ * Register (or clear with fn=NULL) the processed-frame tap.
+ */
+CPVA_API cpva_error_t cpva_set_processed_frame_listener(
+    cpva_context_t              *ctx,
+    cpva_on_processed_frame_fn   fn,
+    void                        *user_data
+);
+
+/**
  * Query the current voice activation mode.
  */
-cpva_error_t cpva_get_voice_activation_mode(
+CPVA_API cpva_error_t cpva_get_voice_activation_mode(
     cpva_context_t               *ctx,
     cpva_voice_activation_mode_t *mode
 );
@@ -549,7 +604,7 @@ cpva_error_t cpva_get_voice_activation_mode(
 /**
  * Retrieve capability info for the CarPlay info message response.
  */
-cpva_error_t cpva_get_info(
+CPVA_API cpva_error_t cpva_get_info(
     cpva_context_t *ctx,
     cpva_info_t    *info
 );
@@ -559,10 +614,10 @@ cpva_error_t cpva_get_info(
  * ---------------------------------------------------------------------- */
 
 /** Return a human-readable string for an error code (never NULL). */
-const char *cpva_error_string(cpva_error_t err);
+CPVA_API const char *cpva_error_string(cpva_error_t err);
 
 /** Return library version as a static string, e.g. "1.0.0". */
-const char *cpva_version_string(void);
+CPVA_API const char *cpva_version_string(void);
 
 #ifdef __cplusplus
 } /* extern "C" */

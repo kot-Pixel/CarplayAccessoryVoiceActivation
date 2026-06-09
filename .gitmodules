@@ -1,0 +1,6 @@
+[submodule "third_party/AndroidAudioProcessModule"]
+	path = third_party/AndroidAudioProcessModule
+	url = https://github.com/kot-Pixel/AndroidAudioProcessModule.git
+[submodule "third_party/hey_siri_kws"]
+	path = third_party/hey_siri_kws
+	url = https://github.com/kot-Pixel/hey_siri_kws.git

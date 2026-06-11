@@ -836,6 +836,13 @@ cpva_error_t cpva_set_aec_delay_ms(cpva_context_t *ctx, int delay_ms)
     return CPVA_OK;
 }
 
+cpva_error_t cpva_set_aec_mobile_mode(cpva_context_t *ctx, int mobile_mode)
+{
+    if (!ctx) return CPVA_ERR_NOT_INITIALIZED;
+    audio3a_set_mobile_mode(ctx->audio3a, mobile_mode);
+    return CPVA_OK;
+}
+
 cpva_error_t cpva_get_capture_stats(cpva_context_t       *ctx,
                                     cpva_capture_stats_t *stats)
 {

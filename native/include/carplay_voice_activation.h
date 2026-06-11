@@ -551,6 +551,22 @@ CPVA_API cpva_error_t cpva_set_3a_enabled(cpva_context_t *ctx, int enabled);
  */
 CPVA_API cpva_error_t cpva_set_aec_delay_ms(cpva_context_t *ctx, int delay_ms);
 
+/**
+ * Switch between AEC3 (mobile_mode=0, default) and AECM (mobile_mode=1).
+ *
+ * AECM (WebRTC Acoustic Echo Cancellation Mobile) is a lighter-weight echo
+ * canceller designed for constrained mobile hardware.  AEC3 provides higher
+ * quality but uses more CPU.  Both modes honour the same
+ * cpva_notify_speaker_active() / cpva_set_aec_delay_ms() controls.
+ *
+ * The change takes effect immediately; AEC convergence restarts.
+ * Calling with the current mode is a no-op.
+ *
+ * @param mobile_mode  1 = AECM, 0 = AEC3.
+ */
+CPVA_API cpva_error_t cpva_set_aec_mobile_mode(cpva_context_t *ctx,
+                                                int             mobile_mode);
+
 /* -------------------------------------------------------------------------
  * Queries
  * ---------------------------------------------------------------------- */

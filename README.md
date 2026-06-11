@@ -88,9 +88,7 @@ build/android-arm64-v8a/install/
     ├── libcarplay_voice_activation.a    ← static variant
     ├── libaudio3a.so                    ← 3A runtime dep
     ├── libten_vad.so                    ← VAD runtime dep
-    ├── libhey_siri_kws.so               ← KWS runtime dep
-    ├── libtensorflowlite_jni.so         ← KWS runtime dep (TFLite)
-    └── libc++_shared.so                 ← KWS runtime dep (C++ stdlib)
+    └── libhey_siri_kws.so               ← KWS (TFLite statically linked inside)
 ```
 
 ---
@@ -110,12 +108,10 @@ your-android-project/
 │       ├── libcarplay_voice_activation.so
 │       ├── libaudio3a.so
 │       ├── libten_vad.so
-│       ├── libhey_siri_kws.so
-│       ├── libtensorflowlite_jni.so
-│       └── libc++_shared.so
+│       └── libhey_siri_kws.so              ← TFLite statically linked inside
 ```
 
-All six `.so` files must be present so Android's dynamic linker can resolve transitive dependencies.
+All four `.so` files must be present. `libhey_siri_kws.so` has TFLite statically linked inside — no separate TFLite or libc++ runtime files are needed.
 
 ---
 

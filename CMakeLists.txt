@@ -77,18 +77,14 @@ if(NOT EXISTS "${KWS_DIST}/include/hey_siri_kws.h")
 endif()
 
 set(KWS_SO "${KWS_DIST}/lib/libhey_siri_kws.so")
-set(KWS_TFLITE_SO  "${KWS_DIST}/runtime/libtensorflowlite_jni.so")
-set(KWS_LIBCXX_SO  "${KWS_DIST}/runtime/libc++_shared.so")
+
+# TFLite is now statically linked inside libhey_siri_kws.so (no separate runtime .so).
 
 add_library(hey_siri_kws SHARED IMPORTED GLOBAL)
 set_target_properties(hey_siri_kws PROPERTIES
     IMPORTED_LOCATION             "${KWS_SO}"
     INTERFACE_INCLUDE_DIRECTORIES "${KWS_DIST}/include"
 )
-
-# TFLite and libc++_shared are runtime-only deps (loaded by libhey_siri_kws.so
-# at process startup); we don't link them at CMake level but install them so
-# the loader can find them.
 
 # ---------------------------------------------------------------------------
 # TenVad (pre-built shared library)
@@ -209,12 +205,11 @@ install(FILES ${CPVA_HEADERS}
 )
 
 # Bundle all runtime .so files so the final app only needs one lib directory.
+# Note: TFLite is statically linked inside libhey_siri_kws.so — no separate runtime deps.
 install(FILES
     $<TARGET_FILE:audio3a_shared>
     "${TENVAD_SO}"
     "${KWS_SO}"
-    "${KWS_TFLITE_SO}"
-    "${KWS_LIBCXX_SO}"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
